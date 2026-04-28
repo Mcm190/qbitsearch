@@ -44,7 +44,7 @@ Results with no date information are excluded when `-r` is used.
 python qsearch.py "breaking bad"
 
 # Multiple terms joined into one query
-python qsearch.py "the boys" s03e01
+python qsearch.py "the boys" "s03e01"
 
 # Top 5 results from the last 3 days
 python qsearch.py "the boys" -n 5 -r 3d
