@@ -1,0 +1,3 @@
+# qsearch has no third-party dependencies.
+# All engines use Python standard library only (urllib, html, json, re, etc.).
+# Python 3.10+ required (uses `list[str]` type hints in qsearch.py).
