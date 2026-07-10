@@ -1,3 +1,8 @@
-# qsearch has no third-party dependencies.
+# qsearch has no third-party Python dependencies.
 # All engines use Python standard library only (urllib, html, json, re, etc.).
 # Python 3.10+ required (uses `list[str]` type hints in qsearch.py).
+#
+# System requirements (not pip-installable):
+#   - transmission-remote  — used by the interactive picker to add torrents.
+#     Debian/Ubuntu: sudo apt install transmission-cli
+#     (searching and plain/text output work fine without it)

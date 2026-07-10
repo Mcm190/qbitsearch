@@ -18,7 +18,7 @@ def _browser_ua() -> str:
 def retrieve_url(url: str) -> str:
     request = urllib.request.Request(url, None, {"User-Agent": _browser_ua()})
     try:
-        response: http.client.HTTPResponse = urllib.request.urlopen(request, timeout=15)
+        response: http.client.HTTPResponse = urllib.request.urlopen(request, timeout=8)
     except (urllib.error.HTTPError, urllib.error.URLError, Exception):
         return ""
 
@@ -48,7 +48,7 @@ def download_file(url: str) -> str:
     import tempfile
     request = urllib.request.Request(url, None, {"User-Agent": _browser_ua()})
     try:
-        response = urllib.request.urlopen(request, timeout=15)
+        response = urllib.request.urlopen(request, timeout=8)
         suffix = ".torrent"
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
             tmp.write(response.read())

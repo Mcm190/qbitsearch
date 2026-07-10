@@ -16,6 +16,7 @@ def prettyPrinter(result: dict) -> None:
             "leech": _to_int(result.get("leech", -1)),
             "engine_url": str(result.get("engine_url", "")).strip(),
             "desc_link": str(result.get("desc_link", "")).strip(),
+            "pub_date": _to_int(result.get("pub_date", -1)),
         })
 
 

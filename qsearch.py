@@ -10,6 +10,8 @@ import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
 
+__version__ = "2.0.0"
+
 ENGINES_DIR = Path(__file__).parent / "engines"
 
 OFFICIAL_ENGINES = [
@@ -50,8 +52,8 @@ def load_engines():
 
 # ── search runner ────────────────────────────────────────────────────────────
 
-ENGINE_TIMEOUT = 30  # seconds per engine before it's abandoned
-ENGINE_TIMEOUT_RECENT = 60  # longer wait when -r filter is active
+ENGINE_TIMEOUT = 15  # seconds per engine before it's abandoned
+ENGINE_TIMEOUT_RECENT = 40  # longer wait when -r filter is active (needs deeper pages)
 
 
 def run_search(engines, query: str, status: dict, timeout: int = ENGINE_TIMEOUT):
@@ -97,7 +99,7 @@ def run_search(engines, query: str, status: dict, timeout: int = ENGINE_TIMEOUT)
                 done_shown.add(name)
         if all_done:
             break
-        time.sleep(0.3)
+        time.sleep(0.1)
 
     # Mark anything still running as timed out and show it
     for name, t in threads:
@@ -110,7 +112,8 @@ def run_search(engines, query: str, status: dict, timeout: int = ENGINE_TIMEOUT)
             label = f"{count} results" if state == "done" else state
             print(f"  [{icon}] {engine_names.get(name, name)}: {label}")
 
-    return novaprinter.results
+    # Snapshot: abandoned threads may keep appending after we return
+    return list(novaprinter.results)
 
 
 # ── output formatting ────────────────────────────────────────────────────────
@@ -173,18 +176,28 @@ def build_query(terms: list[str]) -> str:
     return " ".join(f'"{term.replace(chr(34), r"\\\"")}"' for term in terms)
 
 
-def format_results(results: list, top_n: int, sort_by_date: bool = False) -> list[str]:
+def parse_terms(line: str) -> list[str]:
+    """Split an interactively typed search line into terms, honouring quotes."""
+    import shlex
+    try:
+        return shlex.split(line)
+    except ValueError:
+        return line.split()
+
+
+def prepare_results(results: list, sort_by_date: bool = False) -> list:
+    """Deduplicate and sort results (by date or by seeders)."""
     results = deduplicate(results)
     if sort_by_date:
         dated = [r for r in results if isinstance(r.get("pub_date"), int) and r["pub_date"] > 0]
         undated = [r for r in results if not (isinstance(r.get("pub_date"), int) and r["pub_date"] > 0)]
-        sorted_results = sorted(dated, key=lambda r: r["pub_date"], reverse=True) + undated
-    else:
-        valid = [r for r in results if r["seeds"] >= 0]
-        no_seed = [r for r in results if r["seeds"] < 0]
-        sorted_results = sorted(valid, key=lambda r: r["seeds"], reverse=True) + no_seed
-    top = sorted_results[:top_n]
+        return sorted(dated, key=lambda r: r["pub_date"], reverse=True) + undated
+    valid = [r for r in results if r["seeds"] >= 0]
+    no_seed = [r for r in results if r["seeds"] < 0]
+    return sorted(valid, key=lambda r: r["seeds"], reverse=True) + no_seed
 
+
+def format_results(top: list) -> list[str]:
     lines = []
     for i, r in enumerate(top, 1):
         seeds = r["seeds"] if r["seeds"] >= 0 else "?"
@@ -242,12 +255,18 @@ def main():
         epilog=epilog,
     )
     parser.add_argument("terms", nargs="*", help="Search term(s). Each term is quoted in the final query.")
-    parser.add_argument("-n", "--count", type=int, default=20, metavar="N",
-                        help="Number of results to show, sorted by seeders (default: 20)")
+    parser.add_argument("-n", "--count", type=int, default=40, metavar="N",
+                        help="Number of results to show, sorted by seeders (default: 40)")
     parser.add_argument("-r", "--recent", metavar="DURATION",
                         help="Only show results released within a time window (e.g. 7d, 2w, 24h, 90m)")
     parser.add_argument("-f", "--file", action="store_true",
                         help="Write results to a dated .txt file in addition to terminal output")
+    parser.add_argument("-p", "--plain", action="store_true",
+                        help="Print results as text instead of opening the interactive picker")
+    parser.add_argument("-t", "--timeout", type=int, metavar="SECONDS",
+                        help=f"Seconds to wait for slow engines (default: {ENGINE_TIMEOUT}, "
+                             f"or {ENGINE_TIMEOUT_RECENT} with -r)")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument("--update-engines", action="store_true",
                         help="Re-download all official engine plugins and exit")
     parser.add_argument("--list-engines", action="store_true",
@@ -268,7 +287,9 @@ def main():
                 print(f"  {getattr(eng, 'name', name):30s}  {getattr(eng, 'url', '')}")
         return
 
-    if not args.terms:
+    interactive = sys.stdin.isatty() and sys.stdout.isatty()
+
+    if not args.terms and not interactive:
         parser.print_help()
         print(f"\nSee {usage_path} for more examples.")
         sys.exit(1)
@@ -280,50 +301,75 @@ def main():
         except ValueError as exc:
             parser.error(str(exc))
 
-    query = build_query(args.terms)
-
     engines = load_engines()
     if not engines:
         print("No engines found. Run: python qsearch.py --update-engines")
         sys.exit(1)
 
     engine_names = [getattr(e, "name", n) for n, e in engines]
-    print(f'\nSearching {len(engines)} engines for "{query}"')
-    print(f"Engines: {', '.join(engine_names)}\n")
+    timeout = args.timeout or (ENGINE_TIMEOUT_RECENT if recent_seconds is not None else ENGINE_TIMEOUT)
+    use_tui = interactive and not args.plain
 
-    timeout = ENGINE_TIMEOUT_RECENT if recent_seconds is not None else ENGINE_TIMEOUT
-    status = {}
-    results = run_search(engines, query, status, timeout=timeout)
+    query = build_query(args.terms) if args.terms else None
 
-    total = len(results)
-    print(f"\nTotal results collected: {total}")
+    while True:
+        if query is None:
+            try:
+                line = input("Search (empty to quit): ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                return
+            if not line:
+                return
+            query = build_query(parse_terms(line))
 
-    sort_by_date = False
-    if recent_seconds is not None:
-        filtered = filter_recent(results, recent_seconds)
-        print(f"After -{args.recent} filter: {len(filtered)} results")
-        if filtered:
-            results = filtered
-            sort_by_date = True
-        else:
-            print(f"No results within {args.recent} — engines likely returned only older popular results.")
-            print(f"Showing most recent from full result set instead:\n")
-            sort_by_date = True
+        print(f'\nSearching {len(engines)} engines for "{query}"')
+        print(f"Engines: {', '.join(engine_names)}\n")
 
-    if not results:
-        print("No results found.")
+        status = {}
+        results = run_search(engines, query, status, timeout=timeout)
+
+        total = len(results)
+        print(f"\nTotal results collected: {total}")
+
+        sort_by_date = False
+        if recent_seconds is not None:
+            filtered = filter_recent(results, recent_seconds)
+            print(f"After -{args.recent} filter: {len(filtered)} results")
+            if filtered:
+                results = filtered
+                sort_by_date = True
+            else:
+                print(f"No results within {args.recent} — engines likely returned only older popular results.")
+                print(f"Showing most recent from full result set instead:\n")
+                sort_by_date = True
+
+        if not results:
+            print("No results found.")
+            if use_tui:
+                query = None
+                continue
+            return
+
+        top = prepare_results(results, sort_by_date)[: args.count]
+
+        if args.file:
+            write_file(query, format_results(top))
+
+        if use_tui:
+            for r in top:
+                r["size_h"] = _human_size(r["size"])
+            from tui import run_tui
+            new_search = run_tui(top, query)
+            if not new_search:
+                return
+            query = build_query(parse_terms(new_search))
+            continue
+
+        order = "most recent" if sort_by_date else "seeders"
+        print(f"Showing top {len(top)} by {order}:\n")
+        print("\n".join(format_results(top)))
         return
-
-    total = len(results)
-    if sort_by_date:
-        print(f"Showing top {min(args.count, total)} by most recent:\n")
-    else:
-        print(f"Showing top {min(args.count, total)} by seeders:\n")
-    lines = format_results(results, args.count, sort_by_date=sort_by_date)
-    print("\n".join(lines))
-
-    if args.file:
-        write_file(query, lines)
 
 
 if __name__ == "__main__":
