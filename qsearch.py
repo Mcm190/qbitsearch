@@ -137,6 +137,18 @@ def _info_hash(link: str) -> str:
     return m.group(1).lower() if m else link
 
 
+def tag_trackers(results: list, engines: list) -> None:
+    """Attach a human-readable 'tracker' field to each result, from engine_url."""
+    url_to_name = {}
+    for name, engine in engines:
+        url = getattr(engine, "url", "").rstrip("/")
+        if url:
+            url_to_name[url] = getattr(engine, "name", name)
+    for r in results:
+        url = r.get("engine_url", "").rstrip("/")
+        r["tracker"] = url_to_name.get(url) or r.get("engine_url") or "Unknown"
+
+
 def deduplicate(results: list) -> list:
     seen: set[str] = set()
     out = []
@@ -255,8 +267,8 @@ def main():
         epilog=epilog,
     )
     parser.add_argument("terms", nargs="*", help="Search term(s). Each term is quoted in the final query.")
-    parser.add_argument("-n", "--count", type=int, default=40, metavar="N",
-                        help="Number of results to show, sorted by seeders (default: 40)")
+    parser.add_argument("-n", "--count", type=int, default=200, metavar="N",
+                        help="Number of results to show, sorted by seeders (default: 200)")
     parser.add_argument("-r", "--recent", metavar="DURATION",
                         help="Only show results released within a time window (e.g. 7d, 2w, 24h, 90m)")
     parser.add_argument("-f", "--file", action="store_true",
@@ -328,6 +340,7 @@ def main():
 
         status = {}
         results = run_search(engines, query, status, timeout=timeout)
+        tag_trackers(results, engines)
 
         total = len(results)
         print(f"\nTotal results collected: {total}")
@@ -351,16 +364,17 @@ def main():
                 continue
             return
 
-        top = prepare_results(results, sort_by_date)[: args.count]
+        ranked = prepare_results(results, sort_by_date)
+        top = ranked[: args.count]
 
         if args.file:
             write_file(query, format_results(top))
 
         if use_tui:
-            for r in top:
+            for r in ranked:
                 r["size_h"] = _human_size(r["size"])
             from tui import run_tui
-            new_search = run_tui(top, query)
+            new_search = run_tui(ranked, query, args.count)
             if not new_search:
                 return
             query = build_query(parse_terms(new_search))

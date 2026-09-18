@@ -14,7 +14,7 @@ from pathlib import Path
 STATE_DIR = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state")) / "qsearch"
 LAST_DIR_FILE = STATE_DIR / "last_dir"
 
-HELP = "↑/↓ move   PgUp/PgDn page   Enter add to Transmission   / new search   q quit"
+HELP = "↑/↓ move   ←/→ switch tracker   PgUp/PgDn page   Enter add to Transmission   / new search   q quit"
 PROMPT = "Download dir (Tab completes, empty = default, Esc cancels): "
 SEARCH_PROMPT = "New search (Enter runs, Esc cancels): "
 
@@ -173,24 +173,37 @@ def _prompt_line(stdscr, prompt: str, initial: str = "", complete: bool = False)
         curses.curs_set(0)
 
 
-def _draw(stdscr, results, query, sel, top, added, status_msg, status_ok):
+def _draw_tabs(stdscr, y, w, views, view_idx):
+    x = 0
+    for i, name in enumerate(views):
+        label = f" {name} "
+        if x >= w:
+            break
+        attr = curses.A_REVERSE | curses.A_BOLD if i == view_idx else curses.A_DIM
+        _safe_addstr(stdscr, y, x, label, attr)
+        x += len(label)
+
+
+def _draw(stdscr, results, query, sel, top, added, status_msg, status_ok, views, view_idx):
     h, w = stdscr.getmaxyx()
     stdscr.erase()
     _safe_addstr(stdscr, 0, 0, f" qsearch — {query}   ({len(results)} results)", curses.A_BOLD | curses.A_REVERSE)
-    _safe_addstr(stdscr, 1, 0, f"   {'Seeds':>6} {'Leech':>6} {'Size':>10}  Name", curses.A_DIM)
+    _draw_tabs(stdscr, 1, w, views, view_idx)
+    _safe_addstr(stdscr, 2, 0, f"   {'Seeds':>6} {'Leech':>6} {'Size':>10}  Name", curses.A_DIM)
 
-    list_h = max(1, h - 4)
+    list_h = max(1, h - 5)
     for row, i in enumerate(range(top, min(len(results), top + list_h))):
         r = results[i]
-        mark = "✓" if i in added else " "
+        is_added = r["link"] in added
+        mark = "✓" if is_added else " "
         seeds = r["seeds"] if r["seeds"] >= 0 else "?"
         leech = r["leech"] if r["leech"] >= 0 else "?"
         size = r.get("size_h", r.get("size", ""))
         line = f" {mark} {seeds:>6} {leech:>6} {size:>10}  {r['name']}"
         attr = curses.A_REVERSE if i == sel else 0
-        if i in added and i != sel:
+        if is_added and i != sel:
             attr |= curses.A_DIM
-        _safe_addstr(stdscr, 2 + row, 0, line, attr)
+        _safe_addstr(stdscr, 3 + row, 0, line, attr)
 
     if status_msg:
         attr = curses.A_BOLD
@@ -201,7 +214,13 @@ def _draw(stdscr, results, query, sel, top, added, status_msg, status_ok):
     stdscr.refresh()
 
 
-def _tui_main(stdscr, results, query) -> str | None:
+def _view_results(results: list, view_name: str, count: int | None) -> list:
+    if view_name != "All":
+        results = [r for r in results if r.get("tracker") == view_name]
+    return results[:count] if count else results
+
+
+def _tui_main(stdscr, results, query, count: int | None) -> str | None:
     curses.curs_set(0)
     if curses.has_colors():
         curses.start_color()
@@ -209,22 +228,30 @@ def _tui_main(stdscr, results, query) -> str | None:
         curses.init_pair(1, curses.COLOR_GREEN, -1)
         curses.init_pair(2, curses.COLOR_RED, -1)
 
-    sel = 0
-    top = 0
-    added: set[int] = set()
+    trackers = sorted({r.get("tracker", "Unknown") for r in results})
+    views = ["All"] + trackers
+    view_idx = 0
+    view_state = {i: {"sel": 0, "top": 0} for i in range(len(views))}
+    added: set[str] = set()
     status_msg = ""
     status_ok = True
     last_dir = _load_last_dir()
 
     while True:
+        view_name = views[view_idx]
+        view_results = _view_results(results, view_name, count)
+        state = view_state[view_idx]
+        sel, top = state["sel"], state["top"]
+
         h, _ = stdscr.getmaxyx()
-        list_h = max(1, h - 4)
-        sel = max(0, min(sel, len(results) - 1))
+        list_h = max(1, h - 5)
+        sel = max(0, min(sel, len(view_results) - 1))
         if sel < top:
             top = sel
         elif sel >= top + list_h:
             top = sel - list_h + 1
-        _draw(stdscr, results, query, sel, top, added, status_msg, status_ok)
+        state["sel"], state["top"] = sel, top
+        _draw(stdscr, view_results, query, sel, top, added, status_msg, status_ok, views, view_idx)
 
         ch = stdscr.getch()
         if ch in (ord("q"), 27):
@@ -234,30 +261,37 @@ def _tui_main(stdscr, results, query) -> str | None:
             if term:
                 return term
             status_msg = ""
+        elif ch in (curses.KEY_LEFT, ord("h")):
+            view_idx = (view_idx - 1) % len(views)
+        elif ch in (curses.KEY_RIGHT, ord("l")):
+            view_idx = (view_idx + 1) % len(views)
         elif ch in (curses.KEY_UP, ord("k")):
-            sel -= 1
+            state["sel"] -= 1
         elif ch in (curses.KEY_DOWN, ord("j")):
-            sel += 1
+            state["sel"] += 1
         elif ch == curses.KEY_PPAGE:
-            sel -= list_h
+            state["sel"] -= list_h
         elif ch == curses.KEY_NPAGE:
-            sel += list_h
+            state["sel"] += list_h
         elif ch in (curses.KEY_HOME, ord("g")):
-            sel = 0
+            state["sel"] = 0
         elif ch in (curses.KEY_END, ord("G")):
-            sel = len(results) - 1
+            state["sel"] = len(view_results) - 1
         elif ch in (curses.KEY_ENTER, 10, 13):
+            if not view_results:
+                continue
             path = _prompt_line(stdscr, PROMPT, last_dir, complete=True)
             if path is None:
                 status_msg = "Cancelled."
                 status_ok = True
                 continue
-            name = results[sel]["name"]
+            r = view_results[sel]
+            name = r["name"]
             status_msg = f"Adding: {name} …"
-            _draw(stdscr, results, query, sel, top, added, status_msg, True)
-            ok, msg = add_torrent(results[sel]["link"], path)
+            _draw(stdscr, view_results, query, sel, top, added, status_msg, True, views, view_idx)
+            ok, msg = add_torrent(r["link"], path)
             if ok:
-                added.add(sel)
+                added.add(r["link"])
                 if path:
                     last_dir = path
                     _save_last_dir(path)
@@ -268,9 +302,9 @@ def _tui_main(stdscr, results, query) -> str | None:
             status_ok = ok
 
 
-def run_tui(results: list, query: str) -> str | None:
+def run_tui(results: list, query: str, count: int | None = None) -> str | None:
     """Show the picker. Returns a new search string if the user pressed /, else None."""
     if not results:
         return None
     os.environ.setdefault("ESCDELAY", "25")
-    return curses.wrapper(_tui_main, results, query)
+    return curses.wrapper(_tui_main, results, query, count)
