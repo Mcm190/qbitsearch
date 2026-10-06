@@ -28,7 +28,7 @@ Press `/` to run a new search without leaving the picker:
 
 ## Features
 
-- Searches 6 engines concurrently: EZTV, LimeTorrents, The Pirate Bay, Solid Torrents, TorLock, torrents-csv
+- Searches 8 engines concurrently: EZTV, LimeTorrents, The Pirate Bay, Solid Torrents, TorLock, torrents-csv, Nyaa, AudioBook Bay
 - **Interactive TUI picker** — browse results and add them to Transmission with one keypress
 - **No-arguments mode** — run `python qsearch.py` and type your search at a prompt
 - **Search again from the picker** — press `/` to enter a new query without restarting
